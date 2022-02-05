@@ -32,6 +32,7 @@ namespace RabbitMQ.CreateExcel
             {
                 Uri = new Uri(Configuration.GetConnectionString("RabbitMQ")),DispatchConsumersAsync=true
             });
+            services.AddSingleton<RabbitMQPublisher>();
             services.AddSingleton<RabbitMQClientService>();
             services.AddDbContext<AppDbContext>(options =>
             {

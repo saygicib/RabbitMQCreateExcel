@@ -3,17 +3,16 @@ using RabbitMQ.Client;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using System.Threading.Tasks;
 
-namespace RabbitMQ.CreateExcel.Services
+namespace CreateFileWorkerService.Services
 {
     public class RabbitMQClientService : IDisposable
     {
         private readonly ConnectionFactory _connectionFactory;
         private IConnection _connection;
         private IModel _channel;
-        public static string ExchangeName = "ExcelDirectExchange";
-        public static string RountingExcel = "excel-route";
         public static string QueueName = "queue-excel";
 
         private readonly ILogger<RabbitMQClientService> _logger;
@@ -30,12 +29,6 @@ namespace RabbitMQ.CreateExcel.Services
             if (_channel is { IsOpen: true })
                 return _channel;
             _channel = _connection.CreateModel();
-
-            _channel.ExchangeDeclare(ExchangeName, ExchangeType.Direct, true, false);
-
-            _channel.QueueDeclare(QueueName, true, false, false);
-
-            _channel.QueueBind(QueueName, ExchangeName, RountingExcel);
 
             _logger.LogInformation("RabbitMQ ile bağlantı kuruldu.");
 
