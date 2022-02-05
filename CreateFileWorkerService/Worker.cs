@@ -1,8 +1,20 @@
+using ClosedXML.Excel;
+using CreateFileWorkerService.Models;
+using CreateFileWorkerService.Services;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using RabbitMQ.Client;
+using RabbitMQ.Client.Events;
+using Shared;
 using System;
 using System.Collections.Generic;
+using System.Data;
+using System.IO;
 using System.Linq;
+using System.Net.Http;
+using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -11,22 +23,80 @@ namespace CreateFileWorkerService
     public class Worker : BackgroundService
     {
         private readonly ILogger<Worker> _logger;
-
-        public Worker(ILogger<Worker> logger)
+        private readonly RabbitMQClientService _rabbitMQClientService;
+        private readonly IServiceProvider _serviceProvider;
+        private IModel _channel;
+        public Worker(ILogger<Worker> logger, RabbitMQClientService rabbitMQClientService, IServiceProvider serviceProvider)
         {
             _logger = logger;
+            _rabbitMQClientService = rabbitMQClientService;
+            _serviceProvider = serviceProvider;
         }
         public override Task StartAsync(CancellationToken cancellationToken)
         {
+            _channel = _rabbitMQClientService.Connect();
+            _channel.BasicQos(0, 1, false);
             return base.StartAsync(cancellationToken);
         }
-        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        protected override Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            while (!stoppingToken.IsCancellationRequested)
+            var consumer = new AsyncEventingBasicConsumer(_channel);
+            _channel.BasicConsume(RabbitMQClientService.QueueName, false, consumer);
+            consumer.Received += Consumer_Received;
+            return Task.CompletedTask;
+        }
+
+        private async Task Consumer_Received(object sender, BasicDeliverEventArgs @event)
+        {
+            await Task.Delay(7000);
+            var createExcelMessage = JsonSerializer.Deserialize<CreateExcelMessage>(Encoding.UTF8.GetString(@event.Body.ToArray()));
+            using var ms = new MemoryStream();
+
+            var wb = new XLWorkbook();
+            var ds = new DataSet();
+            ds.Tables.Add(GetTable("Customers"));
+
+            wb.Worksheets.Add(ds);
+            wb.SaveAs(ms);
+            MultipartFormDataContent multipartFormDataContent = new();
+            multipartFormDataContent.Add(new ByteArrayContent(ms.ToArray()), "file", Guid.NewGuid().ToString() + ".xlsx");
+
+            var baseUrl = "http://localhost:33224/api/files";
+            using (var httpClient = new HttpClient())
             {
-                _logger.LogInformation("Worker running at: {time}", DateTimeOffset.Now);
-                await Task.Delay(1000, stoppingToken);
+                var response = await httpClient.PostAsync($"{baseUrl}?fileId={createExcelMessage.FileId}", multipartFormDataContent);
+                if(response.IsSuccessStatusCode)
+                {
+                    _logger.LogInformation($"Created file by succesfull");
+                    _channel.BasicAck(@event.DeliveryTag, false);
+                }
             }
+        }
+
+        private DataTable GetTable(string tableName)
+        {
+            List<Customer> customers;
+            using (var scope = _serviceProvider.CreateScope())
+            {
+                var context = scope.ServiceProvider.GetRequiredService<NorthwindContext>();
+                customers = context.Customers.ToList();
+            }
+            DataTable table = new DataTable
+            {
+                TableName = tableName
+            };
+            table.Columns.Add("CustomerId", (typeof(string)));
+            table.Columns.Add("CompanyName", (typeof(string)));
+            table.Columns.Add("ContactName", (typeof(string)));
+            table.Columns.Add("City", (typeof(string)));
+            table.Columns.Add("Country", (typeof(string)));
+            table.Columns.Add("Phone", (typeof(string)));
+
+            customers.ForEach(x =>
+            {
+                table.Rows.Add(x.CustomerId, x.CompanyName, x.ContactName, x.City, x.Country, x.Phone);
+            });
+            return table;
         }
         public override Task StopAsync(CancellationToken cancellationToken)
         {
